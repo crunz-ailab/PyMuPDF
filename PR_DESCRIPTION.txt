@@ -1,0 +1,48 @@
+## Summary
+
+Use `top` / `bottom` when `Table._get_header().row_has_bold()` checks whether a cached character is inside a table row. The row rectangle uses top-down page coordinates, but this helper currently compares it with the character's CTM-transformed `y0` / `y1` values.
+
+On an ordinary unrotated page, this can both miss a genuinely bold first row and treat unrelated, vertically mirrored bold text as belonging to that row. As a result, an otherwise correctly detected table can receive the wrong internal/external header.
+
+This is a separate occurrence of the coordinate mismatch discussed in #5092 and PR #5096. Credit to Hao-ActuaViz for that report and BetterAndBetterII for the `chars_in_rect()` patch. This PR only addresses `row_has_bold()`; it neither duplicates that patch nor claims to resolve the open-table detection issue.
+
+## Change and scope
+
+```diff
+- if rect_in_rect((c["x0"], c["y0"], c["x1"], c["y1"]), bbox)
++ if rect_in_rect((c["x0"], c["top"], c["x1"], c["bottom"]), bbox)
+```
+
+The full-containment predicate, row bounds, and tolerances are unchanged. Nearby or partially overlapping characters do not become eligible simply because they are near a table. There are no changes to snapping, border completion, candidate grouping, `chars_in_rect()`, or table geometry.
+
+## Reproduction and tests
+
+The added parameterized test constructs a closed 2-by-2 grid in memory, with no external PDF dependency. It covers four cases at two vertical positions:
+
+- A bold first row with ordinary text above: keep the first row as the internal header.
+- A nonbold first row with unrelated bold text at the mirrored vertical position: retain the actual external header.
+- An ordinary external-header control.
+- An internal-header control with no text above.
+
+Each case asserts the table bbox, all four cell rectangles, extracted cell text, header names, and `header.external`.
+
+For the first case, the cell text stays `[['Header A', 'Header B'], ['value A', 'value B']]`. Before the fix, the header is incorrectly `['Above A', 'Above B']` with `external=True`. After the fix, it is `['Header A', 'Header B']` with `external=False`.
+
+## Validation
+
+Base: `d2423b1367bcc9721ea7e994e710e5bc7ea91b09`.
+
+| Local test scope | Unmodified source | This patch |
+| --- | --- | --- |
+| Eight added parameterized cases | 4 passed, 4 failed | 8 passed |
+| Entire `tests/test_tables.py`, including the new cases | 50 passed, 4 failed | 54 passed |
+
+**Build limitation:** these runs used current `main` Python sources with the existing PyMuPDF 2.0 compiled components / MuPDF 1.28.5, on macOS with Python 3.12.2 and pytest 7.4.4. They are not a full rebuild of current `main` (whose default MuPDF version is newer), nor a claim that the complete repository suite or upstream CI has passed. Layout and automatic dependency installation were disabled. A source-built CI run is still needed.
+
+An additional isolated comparison of native `find_tables(use_layout=False)` covered the first 60 pages of each of three local manuals (180 pages total): A9 and Beckhoff XPlanar were identical; only header metadata changed on PDF pages 13 and 16 of the 6000 manual. Table counts, table/cell geometry, and extracted cell text were unchanged on all 180 pages. This is not a downstream Markdown regression or a guarantee of exhaustive document compatibility. Original manual pages and extracted text are not redistributed.
+
+## Supporting material
+
+The prepared evidence archive includes the synthetic PDF and its generation/reproduction script, actual before/after results, focused containment tests, the proposed patch, sanitized upstream test logs, an AST isolation audit, and the 180-page comparison summaries. The earlier PyMuPDF 2.0 evidence is clearly separated from the new `main`-source validation. No manufacturer PDF content is included.
+
+AI tools assisted with investigation, test preparation and execution, and drafting this description. Reported results are from actual local runs; the runtime limitations above are explicit.
